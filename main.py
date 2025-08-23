@@ -8,14 +8,13 @@ import pytz
 
 app = Flask(__name__)
 
-# --------- Google API helpers ----------
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
 def _creds():
-    sa_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+    sa_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
     info = json.loads(sa_json)
     return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
 
@@ -26,7 +25,7 @@ def _drive_upload(file_bytes, filename, mimetype, folder_id):
     created = drive.files().create(
         body=metadata, media_body=media, fields="id,webViewLink"
     ).execute()
-    return created  # contains id, webViewLink
+    return created  # {id, webViewLink}
 
 def _sheet_append(row):
     sheets = build("sheets", "v4", credentials=_creds())
@@ -45,10 +44,9 @@ def _now_eest():
     tz = pytz.timezone("Europe/Sofia")
     return datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
 
-# --------- Routes ----------
 @app.route("/", methods=["GET"])
 def root():
-    return jsonify({"message": "Pepi Uploader is running 🚀"})
+    return jsonify({"message": "Pepi Uploader is running"})
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -61,7 +59,7 @@ def api_task():
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    # simple auth via header (must match ALLOWED_API_KEY)
+    # прост header ключ
     required = os.environ.get("ALLOWED_API_KEY", "")
     if required and request.headers.get("X-API-Key") != required:
         return jsonify({"error": "Forbidden"}), 403
@@ -74,24 +72,22 @@ def upload():
     mimetype = f.mimetype or "application/octet-stream"
     file_bytes = f.read()
 
+    # 1) Drive upload
     folder_id = os.environ["DRIVE_FOLDER_ID"]
     created = _drive_upload(file_bytes, filename, mimetype, folder_id)
     drive_link = created.get("webViewLink", "")
 
-    # optional form fields for log
+    # 2) Sheets log
     task_id      = request.form.get("task_id", "AUTO")
     commanded_by = request.form.get("commanded_by", "Costa")
     executed_by  = request.form.get("executed_by", "Pepi")
     action_type  = request.form.get("action_type", "Content")
     content      = request.form.get("content", "") or drive_link
     status       = request.form.get("status", "uploaded")
-
-    # log to sheet: A..G
     ts = _now_eest()
     _sheet_append([task_id, commanded_by, executed_by, action_type, content, ts, status])
 
     return jsonify({"ok": True, "drive_link": drive_link})
 
 if __name__ == "__main__":
-    # Railway използва gunicorn; това е само за локално
     app.run(host="0.0.0.0", port=8000)
