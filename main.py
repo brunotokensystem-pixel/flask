@@ -1,82 +1,52 @@
 from flask import Flask, request, jsonify
-import os, json, io, datetime
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-import pytz
+import os
 
 app = Flask(__name__)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/spreadsheets",
-]
+UPLOAD_FOLDER = "uploads"
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-def creds():
-    info = json.loads(os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"])
-    return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-
-def now_eest():
-    tz = pytz.timezone("Europe/Sofia")
-    return datetime.datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S %Z")
-
-@app.route("/", methods=["GET"])
-def root():
+@app.route("/")
+def index():
     return "Bruno Token Automation API is running!"
 
-@app.route("/health", methods=["GET"])
+@app.route("/health")
 def health():
-    return jsonify({"ok": True})
+    return jsonify(ok=True)
 
 @app.route("/upload", methods=["POST"])
-def upload():
-    # header auth
-    required = os.environ.get("ALLOWED_API_KEY", "")
-    if required and request.headers.get("X-API-Key") != required:
-        return jsonify({"error": "Forbidden"}), 403
+def upload_file():
+    try:
+        # Четем полетата от формата
+        task_id = request.form.get("task_id")
+        commanded_by = request.form.get("commanded_by")
+        executed_by = request.form.get("executed_by")
+        action_type = request.form.get("action_type")
+        content = request.form.get("content")
+        status = request.form.get("status")
 
-    if "file" not in request.files:
-        return jsonify({"error": "No file"}), 400
+        # Четем файла
+        if "file" not in request.files:
+            return jsonify({"error": "No file part"}), 400
 
-    f = request.files["file"]
-    filename = f.filename or "upload.bin"
-    mimetype = f.mimetype or "application/octet-stream"
-    data = f.read()
+        file = request.files["file"]
+        if file.filename == "":
+            return jsonify({"error": "No selected file"}), 400
 
-    # 1) Google Drive upload
-    drive = build("drive", "v3", credentials=creds())
-    folder_id = os.environ["DRIVE_FOLDER_ID"]
-    media = MediaIoBaseUpload(io.BytesIO(data), mimetype=mimetype, resumable=False)
-    created = drive.files().create(
-        body={"name": filename, "parents": [folder_id]},
-        media_body=media,
-        fields="id,webViewLink"
-    ).execute()
-    drive_link = created.get("webViewLink", "")
+        # Записваме файла
+        filepath = os.path.join(UPLOAD_FOLDER, file.filename)
+        file.save(filepath)
 
-    # 2) Optional log to Google Sheets
-    sheet_id = os.environ.get("SHEET_ID", "")
-    if sheet_id:
-        sheets = build("sheets", "v4", credentials=creds())
-        rng = os.environ.get("SHEET_RANGE", "Sheet1!A:G")
-        row = [[
-            request.form.get("task_id", "AUTO"),
-            request.form.get("commanded_by", "Costa"),
-            request.form.get("executed_by", "Pepi"),
-            request.form.get("action_type", "Content"),
-            request.form.get("content", drive_link) or drive_link,
-            now_eest(),
-            request.form.get("status", "uploaded"),
-        ]]
-        sheets.spreadsheets().values().append(
-            spreadsheetId=sheet_id,
-            range=rng,
-            valueInputOption="USER_ENTERED",
-            insertDataOption="INSERT_ROWS",
-            body={"values": row}
-        ).execute()
+        return jsonify({
+            "status": "success",
+            "task_id": task_id,
+            "commanded_by": commanded_by,
+            "executed_by": executed_by,
+            "action_type": action_type,
+            "content": content,
+            "status_msg": status,
+            "saved_as": filepath
+        }), 200
 
-    return jsonify({"ok": True, "drive_link": drive_link})
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
